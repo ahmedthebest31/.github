@@ -1,0 +1,98 @@
+name: Validate Fastlane Metadata
+
+on:
+  workflow_call:
+    inputs:
+      fastlane_dir:
+        description: "Path to the fastlane metadata android directory"
+        required: false
+        type: string
+        default: "fastlane/metadata/android"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Fastlane supply metadata (Play/F-Droid constraints)
+        uses: ashutoshgngwr/validate-fastlane-supply-metadata@v2
+        with:
+          fastlaneDir: ${{ inputs.fastlane_dir }}
+          usePlayStoreLocales: false
+
+      - name: IzzyOnDroid extra checks
+        shell: bash
+        env:
+          FASTLANE_DIR: ${{ inputs.fastlane_dir }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C.UTF-8
+          BASE="${FASTLANE_DIR}"
+
+          if [ ! -d "$BASE/en-US" ]; then
+            echo "::error::Missing required locale directory: $BASE/en-US"
+            exit 1
+          fi
+
+          for d in "$BASE"/*/; do
+            [ -d "$d" ] || continue
+            loc=$(basename "$d")
+
+            # Strip trailing newlines before counting characters
+            f="$d/full_description.txt"
+            if [ -f "$f" ]; then
+              n=$(printf "%s" "$(cat "$f")" | wc -m)
+              if [ "$n" -ge 3800 ]; then
+                echo "::error file=$f::full_description.txt ($loc) has $n chars; IzzyOnDroid requires below 3800."
+                exit 1
+              fi
+            fi
+
+            s="$d/short_description.txt"
+            if [ -f "$s" ]; then
+              sn=$(printf "%s" "$(cat "$s")" | wc -m)
+              if [ "$sn" -gt 80 ]; then
+                echo "::error file=$s::short_description.txt ($loc) has $sn chars; max 80."
+                exit 1
+              fi
+            fi
+
+            t="$d/title.txt"
+            if [ -f "$t" ]; then
+              tn=$(printf "%s" "$(cat "$t")" | wc -m)
+              if [ "$tn" -gt 30 ]; then
+                echo "::error file=$t::title.txt ($loc) has $tn chars; max 30."
+                exit 1
+              fi
+            fi
+
+            cdir="$d/changelogs"
+            if [ -d "$cdir" ]; then
+              for cf in "$cdir"/*.txt; do
+                [ -e "$cf" ] || continue
+                fname=$(basename "$cf")
+
+                # Ensure changelog filename is strictly numeric versionCode (e.g., 12.txt)
+                if [[ ! "$fname" =~ ^[0-9]+\.txt$ ]]; then
+                  echo "::error file=$cf::Changelog filename must be numeric versionCode (e.g. 10.txt), got $fname."
+                  exit 1
+                fi
+
+                # Check byte size excluding trailing newline
+                bn=$(printf "%s" "$(cat "$cf")" | wc -c)
+                if [ "$bn" -gt 500 ]; then
+                  echo "::error file=$cf::Changelog has $bn bytes; max 500."
+                  exit 1
+                fi
+
+                # Disallow HTML tags instead of blocking valid UTF-8 locales like Arabic
+                if grep -qE '<[^>]+>' "$cf"; then
+                  echo "::error file=$cf::Changelog must be plain text (HTML tags detected)."
+                  exit 1
+                fi
+              done
+            fi
+          done
+
+          echo "IzzyOnDroid extra checks passed."
